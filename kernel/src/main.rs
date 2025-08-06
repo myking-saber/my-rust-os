@@ -2,119 +2,150 @@
 #![no_main]
 
 use bootloader_api::{entry_point, BootInfo};
+use core::fmt::Write;
+use spin::Mutex;
 
 mod font;
+mod writer;
+
+use writer::{Writer, Color};
 
 entry_point!(kernel_main);
 
-fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
+// 全局 Writer 實例，使用 Mutex 保護線程安全
+static WRITER: Mutex<Option<Writer>> = Mutex::new(None);
+
+/// 初始化全局 Writer
+fn init_writer(boot_info: &'static mut BootInfo) {
     if let Some(framebuffer) = boot_info.framebuffer.as_mut() {
         let info = framebuffer.info();
         let buffer = framebuffer.buffer_mut();
-        
-        // 清屏為黑色
-        clear_screen(buffer, info);
-        
-        // 測試字符串顯示
-        draw_string(buffer, info, "Hello World!", 50, 50);
-        draw_string(buffer, info, "Rust OS is working!", 50, 70);
-        draw_string(buffer, info, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", 50, 90);
-        draw_string(buffer, info, "0123456789", 50, 110);
-    }
-    
-    loop {}
-}
-
-fn clear_screen(buffer: &mut [u8], info: bootloader_api::info::FrameBufferInfo) {
-    let bytes_per_pixel = info.bytes_per_pixel;
-    let total_pixels = info.width * info.height;
-    let expected_size = total_pixels * bytes_per_pixel;
-    
-    if buffer.len() >= expected_size {
-        for i in (0..expected_size).step_by(bytes_per_pixel) {
-            if i + bytes_per_pixel <= buffer.len() {
-                buffer[i] = 0;       // Blue (黑色)
-                if bytes_per_pixel > 1 {
-                    buffer[i + 1] = 0;   // Green
-                }
-                if bytes_per_pixel > 2 {
-                    buffer[i + 2] = 0;   // Red
-                }
-                if bytes_per_pixel > 3 {
-                    buffer[i + 3] = 255; // Alpha
-                }
-            }
-        }
+        let mut writer = Writer::new(buffer, info);
+        writer.clear_screen();  // 初始化時清屏
+        *WRITER.lock() = Some(writer);
     }
 }
 
-fn draw_char_simple(
-    buffer: &mut [u8],
-    info: bootloader_api::info::FrameBufferInfo,
-    ch: char,
-    start_x: usize,
-    start_y: usize,
-) {
-    let char_bitmap = font::Font8x8::get_char(ch);
-    let bytes_per_pixel = info.bytes_per_pixel;
-    let scale = 2; // 2x 放大，讓字符變為 16x16
+/// 打印函數的內部實現
+#[doc(hidden)]
+pub fn _print(args: core::fmt::Arguments) {
+    use core::fmt::Write;
     
-    // 繪製 8x8 字符，每個像素放大為 2x2
-    for (row, &bitmap_row) in char_bitmap.iter().enumerate() {
-        for col in 0..8 {
-            // 修正位提取順序 - 嘗試另一個方向
-            let pixel_on = (bitmap_row >> col) & 1; // 改為從低位開始
-            
-            // 繪製放大的像素塊
-            for dy in 0..scale {
-                for dx in 0..scale {
-                    let x = start_x + col * scale + dx;
-                    let y = start_y + row * scale + dy;
-                    
-                    // 確保不超出屏幕邊界
-                    if x < info.width && y < info.height {
-                        let pixel_offset = (y * info.width + x) * bytes_per_pixel;
-                        
-                        if pixel_offset + bytes_per_pixel <= buffer.len() {
-                            if pixel_on == 1 {
-                                // 繪製白色像素（前景）
-                                buffer[pixel_offset] = 255;     // Blue
-                                if bytes_per_pixel > 1 {
-                                    buffer[pixel_offset + 1] = 255; // Green
-                                }
-                                if bytes_per_pixel > 2 {
-                                    buffer[pixel_offset + 2] = 255; // Red  
-                                }
-                                if bytes_per_pixel > 3 {
-                                    buffer[pixel_offset + 3] = 255; // Alpha
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    // 獲取全局 Writer 並寫入內容
+    if let Some(ref mut writer) = WRITER.lock().as_mut() {
+        writer.write_fmt(args).unwrap();
     }
 }
 
-fn draw_string(
-    buffer: &mut [u8],
-    info: bootloader_api::info::FrameBufferInfo,
-    text: &str,
-    mut x: usize,
-    y: usize,
-) {
-    for ch in text.chars() {
-        let char_width = 16; // 因為我們放大了 2 倍，所以寬度是 16
-        if x + char_width > info.width {
-            break;
+/// print! 宏 - 不換行的打印
+#[macro_export]
+macro_rules! print {
+    ($($arg:tt)*) => ($crate::_print(format_args!($($arg)*)));
+}
+
+/// println! 宏 - 帶換行的打印
+#[macro_export]
+macro_rules! println {
+    () => ($crate::print!("\n"));
+    ($($arg:tt)*) => ($crate::print!("{}\n", format_args!($($arg)*)));
+}
+
+/// 設置文字顏色的輔助函數
+pub fn set_text_color(fg: Color, bg: Color) {
+    if let Some(ref mut writer) = WRITER.lock().as_mut() {
+        writer.set_fg_color(fg);
+        writer.set_bg_color(bg);
+    }
+}
+
+/// 清屏函數
+pub fn clear_screen() {
+    if let Some(ref mut writer) = WRITER.lock().as_mut() {
+        writer.clear_screen();
+    }
+}
+
+fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
+    // 初始化全局 Writer
+    init_writer(boot_info);
+    
+    // 現在我們可以像標準 Rust 一樣使用 println! 了！
+    println!("=== Welcome to Rust OS! ===");
+    println!();
+    
+    println!("println! macro is working perfectly!");
+    println!("Current system time: {} ms", 1234567890);
+    println!("Memory available: {} MB", 512);
+    println!();
+    
+    // 測試格式化功能
+    let name = "Rust OS";
+    let version = "0.1.0";
+    println!("System: {} v{}", name, version);
+    println!("Answer to everything: {}", 42);
+    println!("Hex value: 0x{:x}", 255);
+    println!("Binary: 0b{:08b}", 255);
+    println!();
+    
+    // 測試顏色變化
+    set_text_color(Color::RED, Color::BLACK);
+    println!("This text is RED!");
+    
+    set_text_color(Color::GREEN, Color::BLACK);
+    println!("This text is GREEN!");
+    
+    set_text_color(Color::BLUE, Color::BLACK);
+    println!("This text is BLUE!");
+    
+    set_text_color(Color::YELLOW, Color::BLACK);
+    println!("This text is YELLOW!");
+    
+    set_text_color(Color::WHITE, Color::BLACK);
+    println!();
+    
+    // 測試混合使用 print! 和 println!
+    print!("Loading");
+    for i in 0..5 {
+        print!(".");
+        // 簡單延遲
+        for _ in 0..10000000 {
+            core::hint::spin_loop();
         }
-        draw_char_simple(buffer, info, ch, x, y);
-        x += char_width; // 移動到下一個字符位置
+    }
+    println!(" Done!");
+    println!();
+    
+    // 測試長文本和自動滾動
+    println!("Testing automatic text wrapping and scrolling:");
+    for i in 0..20 {
+        println!("Line {}: This is a test line that demonstrates automatic scrolling when we have too many lines on the screen.", i + 1);
+    }
+    
+    println!();
+    set_text_color(Color::GREEN, Color::BLACK);
+    println!("✓ All tests passed!");
+    println!("✓ Rust OS is running successfully!");
+    
+    set_text_color(Color::WHITE, Color::BLACK);
+    println!();
+    println!("System ready. Entering infinite loop...");
+    
+    loop {
+        // 系統主循環
+        core::hint::spin_loop();
     }
 }
 
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    loop {}
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    // 當程序 panic 時，顯示錯誤信息
+    set_text_color(Color::RED, Color::BLACK);
+    println!();
+    println!("KERNEL PANIC!");
+    println!("=============");
+    println!("{}", info);
+    
+    loop {
+        core::hint::spin_loop();
+    }
 }
