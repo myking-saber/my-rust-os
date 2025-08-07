@@ -13,12 +13,13 @@ const PIC2_DATA: u16 = 0xA1;
 const ICW1_INIT: u8 = 0x11;
 const ICW4_8086: u8 = 0x01;
 
-/// 中斷向量偏移
-pub const PIC1_OFFSET: u8 = 32;  // 主 PIC 中斷號從 32 開始
-pub const PIC2_OFFSET: u8 = 40;  // 從 PIC 中斷號從 40 開始
+/// 中断向量偏移
+pub const PIC1_OFFSET: u8 = 32;  // 主 PIC 中断号从 32 开始
+pub const PIC2_OFFSET: u8 = 40;  // 从 PIC 中断号从 40 开始
 
-/// 鍵盤中斷號
-pub const KEYBOARD_INTERRUPT_ID: u8 = PIC1_OFFSET + 1;  // IRQ1 = 33
+/// ✨ 中断号定义
+pub const TIMER_INTERRUPT_ID: u8 = PIC1_OFFSET + 0;     // IRQ0 = 32 (定时器)
+pub const KEYBOARD_INTERRUPT_ID: u8 = PIC1_OFFSET + 1;  // IRQ1 = 33 (键盘)
 
 pub struct Pics {
     pic1_command: Port<u8>,
@@ -39,40 +40,40 @@ impl Pics {
 
     /// 初始化 PIC
     pub unsafe fn initialize(&mut self) {
-        // 禁用所有中斷
+        // 禁用所有中断
         self.pic1_data.write(0xFF);
         self.pic2_data.write(0xFF);
 
-        // 開始初始化序列
+        // 开始初始化序列
         self.pic1_command.write(ICW1_INIT);
         io_wait();
         self.pic2_command.write(ICW1_INIT);
         io_wait();
 
-        // 設置中斷向量偏移
+        // 设置中断向量偏移
         self.pic1_data.write(PIC1_OFFSET);
         io_wait();
         self.pic2_data.write(PIC2_OFFSET);
         io_wait();
 
-        // 配置 PIC 鏈接
-        self.pic1_data.write(4);  // 主 PIC 的 IRQ2 連接從 PIC
+        // 配置 PIC 链接
+        self.pic1_data.write(4);  // 主 PIC 的 IRQ2 连接从 PIC
         io_wait();
-        self.pic2_data.write(2);  // 從 PIC 連接到主 PIC 的 IRQ2
+        self.pic2_data.write(2);  // 从 PIC 连接到主 PIC 的 IRQ2
         io_wait();
 
-        // 設置 8086 模式
+        // 设置 8086 模式
         self.pic1_data.write(ICW4_8086);
         io_wait();
         self.pic2_data.write(ICW4_8086);
         io_wait();
 
-        // 重新禁用所有中斷，稍後手動啟用需要的
+        // 重新禁用所有中断，稍后手动启用需要的
         self.pic1_data.write(0xFF);
         self.pic2_data.write(0xFF);
     }
 
-    /// 啟用特定中斷
+    /// 启用特定中断
     pub unsafe fn enable_interrupt(&mut self, irq: u8) {
         if irq < 8 {
             let mask = self.pic1_data.read();
@@ -83,23 +84,23 @@ impl Pics {
         }
     }
 
-    /// 發送 EOI (End of Interrupt) 信號
+    /// 发送 EOI (End of Interrupt) 信号
     pub unsafe fn end_of_interrupt(&mut self, interrupt_id: u8) {
         if interrupt_id >= PIC2_OFFSET {
-            // 如果是從 PIC 的中斷，兩個 PIC 都要發送 EOI
+            // 如果是从 PIC 的中断，两个 PIC 都要发送 EOI
             self.pic2_command.write(0x20);
         }
-        // 總是向主 PIC 發送 EOI
+        // 总是向主 PIC 发送 EOI
         self.pic1_command.write(0x20);
     }
 }
 
-/// I/O 延時函數
+/// I/O 延时函数
 unsafe fn io_wait() {
     Port::new(0x80).write(0u8);
 }
 
-/// 全局 PIC 實例
+/// 全局 PIC 实例
 static PICS: Mutex<Pics> = Mutex::new(Pics::new());
 
 /// 初始化 PIC
@@ -109,14 +110,21 @@ pub fn init() {
     }
 }
 
-/// 啟用鍵盤中斷
-pub fn enable_keyboard() {
+/// ✨ 启用定时器中断
+pub fn enable_timer() {
     unsafe {
-        PICS.lock().enable_interrupt(1); // IRQ1 = 鍵盤
+        PICS.lock().enable_interrupt(0); // IRQ0 = 定时器
     }
 }
 
-/// 發送中斷結束信號
+/// 启用键盘中断
+pub fn enable_keyboard() {
+    unsafe {
+        PICS.lock().enable_interrupt(1); // IRQ1 = 键盘
+    }
+}
+
+/// 发送中断结束信号
 pub fn end_of_interrupt(interrupt_id: u8) {
     unsafe {
         PICS.lock().end_of_interrupt(interrupt_id);
