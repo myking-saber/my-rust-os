@@ -19,6 +19,7 @@ impl Color {
     pub const GREEN: Color = Color { r: 0, g: 255, b: 0 };
     pub const BLUE: Color = Color { r: 0, g: 0, b: 255 };
     pub const YELLOW: Color = Color { r: 255, g: 255, b: 0 };
+    pub const CYAN: Color = Color { r: 0, g: 255, b: 255 };  // ✨ 新增 CYAN 顏色
 }
 
 /// 文字輸出管理器
@@ -94,11 +95,59 @@ impl Writer {
         }
     }
 
+    /// 退格功能 - 刪除前一個字符
+    pub fn backspace(&mut self) {
+        if self.cursor_x >= self.char_width {
+            // 移動光標到前一個字符位置
+            self.cursor_x -= self.char_width;
+            
+            // 在該位置繪製背景色的矩形（擦除字符）
+            self.draw_filled_rect(
+                self.cursor_x, 
+                self.cursor_y, 
+                self.char_width, 
+                self.char_height, 
+                self.bg_color
+            );
+        } else if self.cursor_y >= self.char_height {
+            // 如果在行首，移動到上一行末尾
+            self.cursor_y -= self.char_height;
+            
+            // 找到上一行的末尾位置（簡化版本：移動到行末）
+            let chars_per_line = self.info.width / self.char_width;
+            self.cursor_x = (chars_per_line - 1) * self.char_width;
+            
+            // 從該位置向左尋找最後一個非空白字符（簡化實現）
+            self.draw_filled_rect(
+                self.cursor_x, 
+                self.cursor_y, 
+                self.char_width, 
+                self.char_height, 
+                self.bg_color
+            );
+        }
+        // 如果已經在屏幕左上角 (0,0)，則不執行任何操作
+    }
+
+    /// 繪製填充矩形
+    fn draw_filled_rect(&mut self, x: usize, y: usize, width: usize, height: usize, color: Color) {
+        for dy in 0..height {
+            for dx in 0..width {
+                let pixel_x = x + dx;
+                let pixel_y = y + dy;
+                
+                if pixel_x < self.info.width && pixel_y < self.info.height {
+                    self.write_pixel(pixel_x, pixel_y, color);
+                }
+            }
+        }
+    }
+
     /// 向上滾動一行
     fn scroll_up(&mut self) {
         let bytes_per_pixel = self.info.bytes_per_pixel;
         let line_bytes = self.info.width * bytes_per_pixel;
-        let scroll_bytes = line_bytes * self.char_height;
+        let _scroll_bytes = line_bytes * self.char_height;
 
         // 將所有行向上移動
         for y in 0..(self.info.height - self.char_height) {
@@ -129,6 +178,17 @@ impl Writer {
         match ch {
             '\n' => self.newline(),
             '\r' => self.cursor_x = 0,
+            '\t' => { // Tab 鍵處理 - 4個空格
+                for _ in 0..4 {
+                    if self.cursor_x + self.char_width <= self.info.width {
+                        self.draw_char(' ', self.cursor_x, self.cursor_y);
+                        self.cursor_x += self.char_width;
+                    } else {
+                        self.newline();
+                        break;
+                    }
+                }
+            },
             ch => {
                 // 檢查是否需要換行
                 if self.cursor_x + self.char_width > self.info.width {

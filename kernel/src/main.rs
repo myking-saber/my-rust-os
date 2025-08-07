@@ -1,19 +1,27 @@
 #![no_std]
 #![no_main]
+#![feature(abi_x86_interrupt)] 
 
 use bootloader_api::{entry_point, BootInfo};
-use core::fmt::Write;
 use spin::Mutex;
 
 mod font;
 mod writer;
+mod interrupts; 
+mod pic;
+mod keyboard;
+mod shell;  // ✨ 新增 shell 模塊
 
 use writer::{Writer, Color};
+use shell::Shell;
 
 entry_point!(kernel_main);
 
-// 全局 Writer 實例，使用 Mutex 保護線程安全
-static WRITER: Mutex<Option<Writer>> = Mutex::new(None);
+// 全局 Writer 實例
+pub static WRITER: Mutex<Option<Writer>> = Mutex::new(None);
+
+// 全局 Shell 實例 ✨ 新增
+pub static SHELL: Mutex<Shell> = Mutex::new(Shell::new());
 
 /// 初始化全局 Writer
 fn init_writer(boot_info: &'static mut BootInfo) {
@@ -21,7 +29,7 @@ fn init_writer(boot_info: &'static mut BootInfo) {
         let info = framebuffer.info();
         let buffer = framebuffer.buffer_mut();
         let mut writer = Writer::new(buffer, info);
-        writer.clear_screen();  // 初始化時清屏
+        writer.clear_screen();
         *WRITER.lock() = Some(writer);
     }
 }
@@ -31,26 +39,25 @@ fn init_writer(boot_info: &'static mut BootInfo) {
 pub fn _print(args: core::fmt::Arguments) {
     use core::fmt::Write;
     
-    // 獲取全局 Writer 並寫入內容
     if let Some(ref mut writer) = WRITER.lock().as_mut() {
         writer.write_fmt(args).unwrap();
     }
 }
 
-/// print! 宏 - 不換行的打印
+/// print! 宏
 #[macro_export]
 macro_rules! print {
     ($($arg:tt)*) => ($crate::_print(format_args!($($arg)*)));
 }
 
-/// println! 宏 - 帶換行的打印
+/// println! 宏
 #[macro_export]
 macro_rules! println {
     () => ($crate::print!("\n"));
     ($($arg:tt)*) => ($crate::print!("{}\n", format_args!($($arg)*)));
 }
 
-/// 設置文字顏色的輔助函數
+/// 設置文字顏色
 pub fn set_text_color(fg: Color, bg: Color) {
     if let Some(ref mut writer) = WRITER.lock().as_mut() {
         writer.set_fg_color(fg);
@@ -58,87 +65,57 @@ pub fn set_text_color(fg: Color, bg: Color) {
     }
 }
 
-/// 清屏函數
-pub fn clear_screen() {
+/// 處理退格鍵 - 刪除前一個字符
+pub fn handle_backspace() {
     if let Some(ref mut writer) = WRITER.lock().as_mut() {
-        writer.clear_screen();
+        writer.backspace();
     }
 }
 
+/// Shell 字符處理函數 ✨ 新增
+pub fn handle_shell_char(ch: char) {
+    SHELL.lock().handle_char(ch);
+}
+
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
-    // 初始化全局 Writer
+    // 初始化顯示系統
     init_writer(boot_info);
     
-    // 現在我們可以像標準 Rust 一樣使用 println! 了！
-    println!("=== Welcome to Rust OS! ===");
-    println!();
+    set_text_color(Color::CYAN, Color::BLACK);
+    println!("=== Rust OS v0.2.1 - Shell Mode ===");
+    set_text_color(Color::WHITE, Color::BLACK);
     
-    println!("println! macro is working perfectly!");
-    println!("Current system time: {} ms", 1234567890);
-    println!("Memory available: {} MB", 512);
-    println!();
-    
-    // 測試格式化功能
-    let name = "Rust OS";
-    let version = "0.1.0";
-    println!("System: {} v{}", name, version);
-    println!("Answer to everything: {}", 42);
-    println!("Hex value: 0x{:x}", 255);
-    println!("Binary: 0b{:08b}", 255);
-    println!();
-    
-    // 測試顏色變化
-    set_text_color(Color::RED, Color::BLACK);
-    println!("This text is RED!");
+    // 分步初始化中斷系統
+    println!("Initializing interrupt system...");
+    interrupts::init();
     
     set_text_color(Color::GREEN, Color::BLACK);
-    println!("This text is GREEN!");
+    println!("✓ All systems initialized!");
+    set_text_color(Color::WHITE, Color::BLACK);
     
-    set_text_color(Color::BLUE, Color::BLACK);
-    println!("This text is BLUE!");
+    println!();
+    println!("Welcome to Rust OS Interactive Shell!");
+    println!("- Type commands and press Enter to execute");
+    println!("- Use Backspace to edit your input");
+    println!("- All keyboard features still work");
+    println!();
     
     set_text_color(Color::YELLOW, Color::BLACK);
-    println!("This text is YELLOW!");
-    
+    println!("Type 'help' to see available commands.");
     set_text_color(Color::WHITE, Color::BLACK);
     println!();
     
-    // 測試混合使用 print! 和 println!
-    print!("Loading");
-    for i in 0..5 {
-        print!(".");
-        // 簡單延遲
-        for _ in 0..10000000 {
-            core::hint::spin_loop();
-        }
-    }
-    println!(" Done!");
-    println!();
+    // 顯示第一個提示符
+    SHELL.lock().show_prompt();
     
-    // 測試長文本和自動滾動
-    println!("Testing automatic text wrapping and scrolling:");
-    for i in 0..20 {
-        println!("Line {}: This is a test line that demonstrates automatic scrolling when we have too many lines on the screen.", i + 1);
-    }
-    
-    println!();
-    set_text_color(Color::GREEN, Color::BLACK);
-    println!("✓ All tests passed!");
-    println!("✓ Rust OS is running successfully!");
-    
-    set_text_color(Color::WHITE, Color::BLACK);
-    println!();
-    println!("System ready. Entering infinite loop...");
-    
+    // 主循環 - 等待鍵盤中斷
     loop {
-        // 系統主循環
-        core::hint::spin_loop();
+        x86_64::instructions::hlt(); // 等待中斷
     }
 }
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    // 當程序 panic 時，顯示錯誤信息
     set_text_color(Color::RED, Color::BLACK);
     println!();
     println!("KERNEL PANIC!");
@@ -146,6 +123,6 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     println!("{}", info);
     
     loop {
-        core::hint::spin_loop();
+        x86_64::instructions::hlt();
     }
 }
